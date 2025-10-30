@@ -34,25 +34,48 @@ def run_model(mtype='small', step=1, is_back=True):
     return run
 
 
-def benchmarking(fun: Callable, warm_num=3, trial_num=5):
+def benchmarking_fun(fun: Callable, warm_num=3, trial_num=5):
     for _ in range(warm_num):
         fun()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
     st = timeit.default_timer()
     for _ in range(trial_num):
         fun()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
     et = timeit.default_timer()
     return (et - st) / trial_num
 
 
-def test_model_benckmarking(mtype='small', step=5, warm_num=3, trial_num=1, is_back=True):
+def test_model_benckmarking(mtype='small', step=3, warm_num=3, trial_num=5, is_back=True):
     test_result = []
     fun = run_model(mtype, step, is_back)
-    mtime = benchmarking(fun, warm_num, trial_num)
+    mtime = benchmarking_fun(fun, warm_num, trial_num)
     test_result.append(((mtype, step, warm_num, trial_num, is_back), mtime))
     res_str = f'model_type={mtype}, step={step}, warm_num={warm_num}, trial_num={trial_num}, is_back={is_back}, mtime={mtime}'
     print(res_str)
+    return res_str
 
 
 if __name__ == '__main__':
-    test_model_benckmarking()
+    res1_list = []
+    for is_back in [True, False]:
+        res1_list.append(test_model_benckmarking(is_back=is_back))
+    print(res1_list)
+
+    res2_list = []
+    for step in range(3, 31, 3):
+        res2_list.append(test_model_benckmarking(is_back=is_back))
+    print(res2_list)
+
+    res3_list = []
+    for w_num in [0, 1, 3, 5]:
+        res3_list.append(test_model_benckmarking(warm_num=w_num))
+    print(res3_list)
+
+    res4_list = []
+    for mtype in ['small', 'medium', 'large', 'xl', '2.7B']:
+        res4_list.append(test_model_benckmarking(mtype=mtype))
+    print(res4_list)
 
