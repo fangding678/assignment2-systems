@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from jaxtyping import Float, Bool, Int
-
+from torch.cuda import nvtx
 
 from .nn_utils import softmax
 
@@ -29,17 +29,17 @@ class Linear(nn.Module):
             d_out: int
                 The number of output features.
         """
-        
+
         super().__init__()
         std = math.sqrt(2 / (d_in + d_out))
         self.weight: Float[Tensor, " d_out d_in"] = nn.Parameter(
-            nn.init.trunc_normal_(torch.empty(d_out, d_in), std=std, a=-3*std, b=3*std),
+            nn.init.trunc_normal_(torch.empty(d_out, d_in), std=std, a=-3 * std, b=3 * std),
             requires_grad=True
         )
 
     def forward(self, x: Float[Tensor, " ... d_in"]) -> Float[Tensor, " ... d_out"]:
         return einsum(x, self.weight, "... d_in, d_out d_in -> ... d_out")
-    
+
     def extra_repr(self):
         return f"d_out={self.weight.shape[0]}, d_in={self.weight.shape[1]}"
 
@@ -52,10 +52,10 @@ class Embedding(nn.Module):
             nn.init.trunc_normal_(torch.empty(vocab_size, d_model), std=std, a=-3 * std, b=3 * std),
             requires_grad=True
         )
-    
+
     def forward(self, token_ids: Int[Tensor, " ..."]) -> Float[Tensor, " ... d_model"]:
         return self.weight[token_ids, :]
-    
+
     def extra_repr(self):
         return f"vocab_size={self.weight.shape[0]}, d={self.weight.shape[1]}"
 
@@ -76,10 +76,10 @@ class RMSNorm(nn.Module):
     """
 
     def __init__(
-        self,
-        hidden_size: int,
-        eps: float = 1e-5,
-        device=None,
+            self,
+            hidden_size: int,
+            eps: float = 1e-5,
+            device=None,
     ):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(hidden_size, device=device))
@@ -105,7 +105,7 @@ class RMSNorm(nn.Module):
         x = x * rms
 
         return (self.weight * x).to(in_dtype)
-    
+
     def extra_repr(self):
         return f"hidden_size={self.weight.shape[0]}, eps={self.eps}"
 
@@ -117,7 +117,7 @@ class RotaryEmbedding(nn.Module):
             "_freq_cis_cache",
             RotaryEmbedding._init_cache(context_length, dim, theta), persistent=False
         )
-    
+
     @staticmethod
     def _init_cache(context_length: int, dim: int, theta: float) -> Float[Tensor, " 2 context_length half_dim"]:
         assert dim % 2 == 0
@@ -145,7 +145,7 @@ class RotaryEmbedding(nn.Module):
         x2_rot = sin * x1 + cos * x2
         result = einx.rearrange('... x_half, ... x_half -> ... (x_half (1 + 1))', x1_rot, x2_rot).contiguous()
         return result
-    
+
     def extra_repr(self):
         return f"context_length={self._freq_cis_cache.shape[0]}, dim/2={self._freq_cis_cache.shape[1]}"
 
@@ -176,14 +176,14 @@ class BasicsTransformerLM(nn.Module):
     """
 
     def __init__(
-        self,
-        vocab_size: int,
-        context_length: int,
-        d_model: int,
-        num_layers: int,
-        num_heads: int,
-        d_ff: int,
-        rope_theta: float,
+            self,
+            vocab_size: int,
+            context_length: int,
+            d_model: int,
+            num_layers: int,
+            num_heads: int,
+            d_ff: int,
+            rope_theta: float,
     ):
         # Store the model configuration for serialization / deserialization
         self.config = {
@@ -254,12 +254,12 @@ class BasicsTransformerLM(nn.Module):
 
     @torch.no_grad()
     def generate(
-        self,
-        x: torch.Tensor,
-        max_new_tokens: int,
-        temperature: float = 1.0,
-        top_k: int | None = None,
-        eos_token_id: int | None = None,
+            self,
+            x: torch.Tensor,
+            max_new_tokens: int,
+            temperature: float = 1.0,
+            top_k: int | None = None,
+            eos_token_id: int | None = None,
     ):
         """
         Args:
@@ -278,12 +278,12 @@ class BasicsTransformerLM(nn.Module):
         """
         if x.dim() == 1:
             x = x.unsqueeze(0)
-            
+
         original_sequence_length = x.size(-1)
         for _ in range(max_new_tokens):
             # Take the last `context_length` tokens if the input is
             # beyond the model's context length
-            x = x[:, -self.context_length :] if x.size(1) > self.context_length else x
+            x = x[:, -self.context_length:] if x.size(1) > self.context_length else x
             # Get the logits from the model
             logits = self.forward(x)
             # Take the logits for the next token
@@ -322,7 +322,7 @@ class BasicsTransformerLM(nn.Module):
         unwanted_prefix = "_orig_mod."
         for k, _ in list(state_dict.items()):
             if k.startswith(unwanted_prefix):
-                state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
+                state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
         model.load_state_dict(state_dict)
         return model
 
@@ -349,11 +349,11 @@ class TransformerBlock(nn.Module):
     """
 
     def __init__(
-        self,
-        d_model: int,
-        num_heads: int,
-        d_ff: int,
-        positional_encoder: RotaryEmbedding,
+            self,
+            d_model: int,
+            num_heads: int,
+            d_ff: int,
+            positional_encoder: RotaryEmbedding,
     ):
         super().__init__()
         self.attn = CausalMultiHeadSelfAttention(
@@ -398,10 +398,10 @@ class SwiGLU(nn.Module):
 
 
 def scaled_dot_product_attention(
-    Q: Float[Tensor, " ... queries d_k"],
-    K: Float[Tensor, " ... keys    d_k"],
-    V: Float[Tensor, " ... keys    d_v"],
-    mask: Bool[Tensor, " ... queries keys"] | None = None,
+        Q: Float[Tensor, " ... queries d_k"],
+        K: Float[Tensor, " ... keys    d_k"],
+        V: Float[Tensor, " ... keys    d_v"],
+        mask: Bool[Tensor, " ... queries keys"] | None = None,
 ) -> Float[Tensor, " ... queries d_v"]:
     """Scaled dot-product attention.
 
@@ -432,6 +432,31 @@ def scaled_dot_product_attention(
     return einsum(attention_weights, V, "... query key, ... key d_v ->  ... query d_v")
 
 
+@nvtx.range('scaled dot product attention')
+def annotated_scaled_dot_product_attention(
+        Q: Float[Tensor, " ... queries d_k"],
+        K: Float[Tensor, " ... keys    d_k"],
+        V: Float[Tensor, " ... keys    d_v"],
+        mask: Bool[Tensor, " ... queries keys"] | None = None,
+) -> Float[Tensor, " ... queries d_v"]:
+    d_k = K.shape[-1]
+    with nvtx.range('computing attention scores'):
+        attention_scores = einsum(Q, K, "... query d_k, ... key d_k -> ... query key") / math.sqrt(d_k)
+
+    if mask is not None:
+        attention_scores = torch.where(mask, attention_scores, float("-inf"))
+
+    with nvtx.range('computing softmax'):
+        attention_weights = softmax(attention_scores, dim=-1)  # Softmax over the key dimension
+
+    with nvtx.range('final matmul'):
+        res = einsum(attention_weights, V, "... query key, ... key d_v ->  ... query d_v")
+    return res
+
+
+scaled_dot_product_attention = annotated_scaled_dot_product_attention
+
+
 class CausalMultiHeadSelfAttention(nn.Module):
     """Multi-Head Self-Attention
 
@@ -454,10 +479,10 @@ class CausalMultiHeadSelfAttention(nn.Module):
     """
 
     def __init__(
-        self,
-        d_model: int,
-        num_heads: int,
-        positional_encoder: RotaryEmbedding,
+            self,
+            d_model: int,
+            num_heads: int,
+            positional_encoder: RotaryEmbedding,
     ):
         super().__init__()
         assert d_model % num_heads == 0
@@ -475,7 +500,8 @@ class CausalMultiHeadSelfAttention(nn.Module):
 
         self.positional_encoder = positional_encoder  # RoPE
 
-    def forward(self, x: Float[Tensor, " ... seq d_k"], token_positions: Int[Tensor, " ... seq"] | None = None) -> Float[Tensor, " ... seq d_v"]:
+    def forward(self, x: Float[Tensor, " ... seq d_k"], token_positions: Int[Tensor, " ... seq"] | None = None) -> \
+    Float[Tensor, " ... seq d_v"]:
         """
         Args:
             x: The input to perform multi-headed self-attention on.
@@ -498,7 +524,8 @@ class CausalMultiHeadSelfAttention(nn.Module):
         )  # fmt: skip
 
         if token_positions is None:
-            token_positions = einx.rearrange("seq -> b... seq", torch.arange(sequence_length, device=x.device), b=[1] * len(b))
+            token_positions = einx.rearrange("seq -> b... seq", torch.arange(sequence_length, device=x.device),
+                                             b=[1] * len(b))
 
         # Duplicate token positions for each head
         token_positions = rearrange(token_positions, "... seq -> ... 1 seq")
@@ -522,6 +549,7 @@ class CausalMultiHeadSelfAttention(nn.Module):
         # Apply the output projection
         output = self.output_proj(attn_output)
         return output
+
 
 def silu(x: torch.Tensor):
     return x * torch.sigmoid(x)
