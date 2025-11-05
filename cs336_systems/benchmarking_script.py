@@ -3,12 +3,13 @@ from torch import Tensor
 from cs336_basics.model import BasicsTransformerLM, softmax
 from einops import einsum
 from jaxtyping import Float, Bool, Int
-from torch_util import get_device
+from torch_util import get_device, precision_context
 # from torch.utils import benchmark
 import timeit
 from typing import Callable
 from torch.cuda import nvtx
 import math
+from contextlib import contextmanager, nullcontext
 
 
 @nvtx.range('scaled dot product attention')
@@ -128,8 +129,38 @@ def profiling_test01():
     test_model_benchmark(mtype='medium', step=50, warm_num=0, trial_num=1)
 
 
+def mix_precision_test01(precision=True):
+    common_context = precision_context if precision else nullcontext
+    with common_context():
+        test_model_benchmark(mtype='medium')
+    with precision_context(device_type='cuda', dtype=torch.bfloat16):
+        test_model_benchmark(mtype='medium')
+    with precision_context(device_type='cuda', dtype=torch.float32):
+        test_model_benchmark(mtype='medium')
+    with precision_context(device_type='cpu', dtype=torch.float16):
+        test_model_benchmark(mtype='medium')
+    with precision_context(device_type='cpu', dtype=torch.bfloat16):
+        test_model_benchmark(mtype='medium')
+    with precision_context(device_type='cpu', dtype=torch.float32):
+        test_model_benchmark(mtype='medium')
+
+
+def memory_analysis_test01():
+
+    with nullcontext():
+        test_model_benchmark(mtype='large')
+    # torch.cuda.memory._record_memory_history(max_entries=1000000)
+    # torch.cuda.memory._dump_snapshot("memory_snapshot.pickle")
+    # torch.cuda.memory._record_memory_history(enabled=None)
+    torch.cuda.memory
+    pass
+
+
 if __name__ == '__main__':
     # benchmarking_test01()
-    profiling_test01()
+    # profiling_test01()
+    # mix_precision_test01()
+    memory_analysis_test01()
+
 
 

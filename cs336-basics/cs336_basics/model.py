@@ -454,7 +454,7 @@ def annotated_scaled_dot_product_attention(
     return res
 
 
-scaled_dot_product_attention = annotated_scaled_dot_product_attention
+# scaled_dot_product_attention = annotated_scaled_dot_product_attention
 
 
 class CausalMultiHeadSelfAttention(nn.Module):

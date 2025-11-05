@@ -36,6 +36,10 @@ def _make_attn_inputs(device=None):
     k = torch.randn(batch_size, n_keys, D, device=device, requires_grad=True)
     v = torch.randn(batch_size, n_keys, D, device=device, requires_grad=True)
     do = torch.randn(batch_size, n_queries, D, device=device)
+    # torch.set_printoptions(threshold=float('inf'))
+    # print('\n\nq[1, 32:48]\n', q[1, 32:48])
+    # print('\n\nk[1, 32:48]\n', k[1, 32:48])
+    # print('\n\nv[1, 32:48]\n', v[1, 32:48])
 
     return q, k, v, do
 
