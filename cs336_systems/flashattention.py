@@ -52,14 +52,14 @@ class FlashAttentionPytorch(torch.autograd.Function):
         tk = (n_key + bk - 1) // bk
         O = torch.empty_like(Q, device=Q.device)
         L = torch.empty((bs_head, n_query), device=Q.device)
-        mask = torch.triu(torch.ones((1, n_query, n_key), dtype=torch.bool), diagonal=1)
+        mask = torch.triu(torch.ones((1, n_query, n_key), dtype=torch.bool, device=Q.device), diagonal=1)
         for i in range(tq):
             start_i, end_i = i*bq, min((i+1)*bq, n_query)
             bq_i = end_i - start_i
             q_i = Q[:, start_i: end_i]
-            o_i = torch.zeros((bs_head, bq_i, d_model), device=Q.device)
-            l_i = torch.zeros((bs_head, bq_i, 1), device=Q.device)
-            m_i = torch.full((bs_head, bq_i, 1), float('-inf'), device=Q.device)
+            o_i = torch.zeros((bs_head, bq_i, d_model), device=Q.device, dtype=Q.dtype)
+            l_i = torch.zeros((bs_head, bq_i, 1), device=Q.device, dtype=Q.dtype)
+            m_i = torch.full((bs_head, bq_i, 1), float('-inf'), device=Q.device, dtype=Q.dtype)
             for j in range(tk):
                 start_j, end_j = j*bk, min((j+1)*bk, n_key)
                 k_j = K[:, start_j: end_j]
@@ -95,8 +95,7 @@ class FlashAttentionPytorch(torch.autograd.Function):
 def _flash_backward(dO, Q, K, V, L, O, is_causal, d_scale):
     S = einsum(Q, K, '... s_q d, ... s_k d -> ... s_q s_k') * d_scale
     if is_causal:
-        print('is_causal', is_causal)
-        mask = torch.ones_like(S, dtype=torch.bool).triu_(diagonal=1)
+        mask = torch.ones_like(S, dtype=torch.bool, device=Q.device).triu_(diagonal=1)
         S = S.masked_fill(mask, float('-inf'))
     P = torch.exp(S - torch.unsqueeze(L, -1))
     if is_causal:
@@ -115,7 +114,7 @@ def _flash_backward(dO, Q, K, V, L, O, is_causal, d_scale):
 @triton.jit
 def flash_fwd_kernel(Q_ptr, K_ptr, V_ptr, O_ptr, L_ptr, 
                      stride_qb, stride_qq, stride_qd, stride_kb, stride_kk, stride_kd, stride_vb, stride_vk, stride_vd, 
-                     stride_ob, stride_oq, stride_od, stride_lb, stride_lq, N_QUERIES, N_KEYS, scale, IS_CAUSAL, eps,
+                     stride_ob, stride_oq, stride_od, stride_lb, stride_lq, N_QUERIES, N_KEYS, d_scale, IS_CAUSAL, eps,
                      D: tl.constexpr, Q_TILE_SIZE: tl.constexpr, K_TILE_SIZE: tl.constexpr):
     query_tile_index = tl.program_id(0)
     batch_index = tl.program_id(1)
@@ -146,11 +145,12 @@ def flash_fwd_kernel(Q_ptr, K_ptr, V_ptr, O_ptr, L_ptr,
                                     block_shape=(Q_TILE_SIZE, D),
                                     order=(1, 0),)
     l_ptr = L_ptr + batch_index * stride_lb + (query_tile_index * Q_TILE_SIZE + tl.arange(0, Q_TILE_SIZE))
-
-    q_i = tl.load(Q_block_ptr, boundary_check=(0, 1)) / scale
-    l_i = tl.zeros((Q_TILE_SIZE, 1), dtype=tl.float32)
-    m_i = tl.full((Q_TILE_SIZE, 1), float('-inf'), dtype=tl.float32)
-    o_i = tl.zeros((Q_TILE_SIZE, D), dtype=tl.float32)
+    q_i = tl.load(Q_block_ptr, boundary_check=(0, 1))
+    d_scale = tl.cast(d_scale, q_i.dtype)
+    q_i = q_i * d_scale
+    l_i = tl.zeros((Q_TILE_SIZE, 1), dtype=q_i.dtype)
+    m_i = tl.full((Q_TILE_SIZE, 1), float('-inf'), dtype=q_i.dtype)
+    o_i = tl.zeros((Q_TILE_SIZE, D), dtype=q_i.dtype)
     tk = (N_KEYS + K_TILE_SIZE - 1) // K_TILE_SIZE
 
     rows = query_tile_index * Q_TILE_SIZE + tl.arange(0, Q_TILE_SIZE)
@@ -158,7 +158,7 @@ def flash_fwd_kernel(Q_ptr, K_ptr, V_ptr, O_ptr, L_ptr,
     # tl.static_print(o_i)
     # tl.static_print(m_i)
     # if query_tile_index == 2 and batch_index == 1:
-    #     tl.device_print('q_i', q_i * scale)
+    #     tl.device_print('q_i', q_i / d_scale)
     #     k1_j = tl.load(K_block_ptr, boundary_check=(0, 1))
     #     v1_j = tl.load(V_block_ptr, boundary_check=(0, 1))
     #     tl.device_print('k1_j', k1_j)
@@ -166,19 +166,23 @@ def flash_fwd_kernel(Q_ptr, K_ptr, V_ptr, O_ptr, L_ptr,
     for j in range(tk):
         k_j = tl.load(K_block_ptr, boundary_check=(0, 1))
         v_j = tl.load(V_block_ptr, boundary_check=(0, 1))
-        s_j = tl.dot(q_i, k_j)
+        # tl.device_print('k_j.dtype', k_j.dtype)
+        # tl.device_print('v_j.dtype', v_j.dtype)
+        # tl.static_print(q_i)
+        # tl.static_print(k_j)
+        s_j = tl.dot(q_i, k_j).to(q_i.dtype)
         if IS_CAUSAL:
             cols = j * K_TILE_SIZE + tl.arange(0, K_TILE_SIZE)
             cols = cols[None, :]
-            mask = tl.where(cols > rows, float('-inf'), 0)
+            mask = tl.where(cols > rows, float('-inf'), 0).to(q_i.dtype)
             s_j = tl.add(s_j, mask)
 
         m_new = tl.maximum(tl.max(s_j, axis=-1, keep_dims=True), m_i)
-        p_i = tl.exp(s_j - m_new)
-        m_diff = tl.exp(m_i - m_new)
-        l_i = m_diff * l_i + tl.sum(p_i, axis=-1, keep_dims=True)
-        o_i = m_diff * o_i + tl.dot(p_i, v_j)
-        m_i = m_new
+        p_i = tl.exp(s_j - m_new).to(q_i.dtype)
+        m_diff = tl.exp(m_i - m_new).to(q_i.dtype)
+        l_i = tl.cast(m_diff * l_i + tl.sum(p_i, axis=-1, keep_dims=True), q_i.dtype)
+        o_i = tl.cast(m_diff * o_i + tl.dot(p_i, v_j), q_i.dtype)
+        m_i = tl.cast(m_new, q_i.dtype)
 
         K_block_ptr = tl.advance(K_block_ptr, offsets=(0, K_TILE_SIZE))
         V_block_ptr = tl.advance(V_block_ptr, offsets=(K_TILE_SIZE, 0))
@@ -199,18 +203,19 @@ class FlashAttentionTriton(torch.autograd.Function):
         bs = Q.shape[0]
         bs_head, n_query, d_model = Q.shape
         n_key = K.shape[-2]
-        scale = math.sqrt(d_model)
+        d_scale = 1 / math.sqrt(d_model)
         tq = (n_query + bq - 1) // bq
         grid = (tq, bs)
 
-        O = torch.empty_like(Q, device=Q.device)
-        L = torch.empty((bs_head, n_query), device=Q.device, dtype=torch.float32)
+        O = torch.empty_like(Q, device=Q.device, dtype=Q.dtype)
+        L = torch.empty((bs_head, n_query), device=Q.device, dtype=Q.dtype)
         # print('\n\ngrid', grid)
         # print('Q.stride()', Q.stride())
         # print('K.stride()', K.stride())
         # print('V.stride()', V.stride())
         # print('O.stride()', O.stride())
         # print('L.stride()', L.stride())
+        # print('Q.dtype', Q.dtype)
 
         flash_fwd_kernel[grid](
             Q_ptr=Q, K_ptr=K, V_ptr=V, O_ptr=O, L_ptr=L, \
@@ -219,7 +224,7 @@ class FlashAttentionTriton(torch.autograd.Function):
             stride_vb=V.stride(0), stride_vk=V.stride(1), stride_vd=V.stride(2), \
             stride_ob=O.stride(0), stride_oq=O.stride(1), stride_od=O.stride(2), \
             stride_lb=L.stride(0), stride_lq=L.stride(1), \
-            N_QUERIES=n_query, N_KEYS=n_key, scale=scale, IS_CAUSAL=is_causal, eps=1e-6, \
+            N_QUERIES=n_query, N_KEYS=n_key, d_scale=d_scale, IS_CAUSAL=is_causal, eps=1e-6, \
             D=d_model, Q_TILE_SIZE=bq, K_TILE_SIZE=bk
         )
         ctx.save_for_backward(Q, K, V, L, O)

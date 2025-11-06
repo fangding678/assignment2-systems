@@ -37,7 +37,7 @@ MANIFEST
 *.spec
 *.nsys-rep
 *tmp_data*
-uv.lock
+*uv.lock*
 
 # Installer logs
 pip-log.txt
