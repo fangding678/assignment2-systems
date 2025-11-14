@@ -11,7 +11,7 @@ import triton.language as tl
 from triton.runtime import driver
 from cs336_basics.model import BasicsTransformerLM, softmax
 from cs336_basics.model import scaled_dot_product_attention
-# from cs336_system.torch_util import get_device, precision_context
+# from cs336_systems.torch_util import get_device, precision_context
 
 
 # DEVICE = triton.runtime.driver.active.get_active_torch_device()
